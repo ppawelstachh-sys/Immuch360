@@ -44,85 +44,78 @@ jobs:
           mise //mobile:install:ci
           mise //mobile:codegen
 
-      - name: Dodaj restart filmu po założeniu gogli
+      - name: Dodaj restart filmu po zalozeniu gogli (FANTO v2)
         run: |
           python3 - <<'PY'
-          #!/usr/bin/env python3
-          # Immuch360 v3.3.0-rc.0-25: restart immersive playback when the headset is worn again.
-          # Local source modification for Meta Quest. This script does not install an APK.
           from pathlib import Path
           import sys
-          
-          SOURCE = Path("mobile/android/app/src/main/kotlin/app/alextran/immich/immersive/ImmersiveViewerActivity.kt")
-          
-          def main():
-              root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path.cwd()
-              source = root / SOURCE
-              if not source.is_file():
-                  sys.exit(f"Brak pliku: {source}\nUruchom skrypt z katalogu glownego kodu Immuch360 lub podaj katalog jako argument.")
-              body = source.read_text(encoding="utf-8")
-              if "private var headsetUnworn = false" in body:
-                  sys.exit("Poprawka jest juz obecna — niczego nie zmieniono.")
-              fixes = [
-                  (
-                      '  private var playOnReturn = false\n  /** The video track of the current url',
-                      '  private var playOnReturn = false\n'
-                      '  /** True only after an HMD unmount event; a system menu must not cause a restart. */\n'
-                      '  private var headsetUnworn = false\n'
-                      '  /** The video track of the current url',
-                  ),
-                  (
-                      '  private fun playbackAllowed(): Boolean = resumed && focused',
-                      '  private fun playbackAllowed(): Boolean = resumed && focused && !headsetUnworn',
-                  ),
-                  (
-                      '  // ---------------------------------------------------------------------------------------------\n'
-                      '  // Lifecycle\n'
-                      '  /**\n'
-                      '   * Pauses the video while the session has no input focus',
-                      '  // ---------------------------------------------------------------------------------------------\n'
-                      '  // Lifecycle\n'
-                      '  /** Only the physical HMD handoff restarts a video. Losing focus to a menu does not. */\n'
-                      '  override fun onHMDUnmounted() {\n'
-                      '    super.onHMDUnmounted()\n'
-                      '    headsetUnworn = true\n'
-                      '    holdPlayback()\n'
-                      '  }\n'
-                      '  override fun onHMDMounted() {\n'
-                      '    super.onHMDMounted()\n'
-                      '    if (!headsetUnworn) return\n'
-                      '    headsetUnworn = false\n'
-                      '    if (currentVideoUrl != null) {\n'
-                      '      player?.seekTo(0L)\n'
-                      '      playOnReturn = true\n'
-                      '    }\n'
-                      '    resumeHeldPlayback()\n'
-                      '  }\n'
-                      '  /**\n'
-                      '   * Pauses the video while the session has no input focus',
-                  ),
-              ]
-              for old, new in fixes:
-                  n = body.count(old)
-                  if n != 1:
-                      sys.exit(f"Nie znaleziono jednoznacznie fragmentu poprawki ({n} dopasowan). Plik nie zostal zmieniony. Sprawdz wersje kodu.")
-                  body = body.replace(old, new, 1)
-              backup = source.with_suffix('.kt.before-hmd-restart')
-              backup.write_text(source.read_text(encoding='utf-8'), encoding='utf-8')
-              source.write_text(body, encoding='utf-8')
-              print(f"Zmieniono: {source}\nKopia poprzedniego pliku: {backup}\nTeraz nalezy zbudowac i przetestowac APK Meta Quest.")
-          
-          if __name__ == "__main__":
-              main()
+
+          source = Path('mobile/android/app/src/main/kotlin/app/alextran/immich/immersive/ImmersiveViewerActivity.kt')
+          if not source.is_file():
+              sys.exit(f'Nie znaleziono pliku odtwarzacza: {source}')
+          content = source.read_text(encoding='utf-8')
+
+          # Kotwice sprawdzone w źródłach wersji v3.3.0-rc.0-25.
+          # Nie dopasowujemy całych komentarzy: ich zmiana powodowała awarię poprzedniej wersji skryptu.
+          changes = [
+              (
+                  '  private var playOnReturn = false',
+                  '  private var playOnReturn = false\n'
+                  '  /** FANTO: remembers a real headset removal, not system menu focus changes. */\n'
+                  '  private var headsetUnworn = false',
+                  'pole playOnReturn',
+              ),
+              (
+                  '  private fun playbackAllowed(): Boolean = resumed && focused',
+                  '  private fun playbackAllowed(): Boolean = resumed && focused && !headsetUnworn',
+                  'warunek playbackAllowed',
+              ),
+              (
+                  '  override fun onSessionStateChanged(state: SessionState) {',
+                  '  /** FANTO: pause when the headset is removed. */\n'
+                  '  override fun onHMDUnmounted() {\n'
+                  '    super.onHMDUnmounted()\n'
+                  '    headsetUnworn = true\n'
+                  '    holdPlayback()\n'
+                  '  }\n\n'
+                  '  /** FANTO: restart from zero whenever the next visitor puts the headset on. */\n'
+                  '  override fun onHMDMounted() {\n'
+                  '    super.onHMDMounted()\n'
+                  '    if (!headsetUnworn) return\n'
+                  '    headsetUnworn = false\n'
+                  '    if (request?.isVideo == true && currentVideoUrl != null) {\n'
+                  '      player?.seekTo(0L)\n'
+                  '      playOnReturn = true\n'
+                  '    }\n'
+                  '    resumeHeldPlayback()\n'
+                  '  }\n\n'
+                  '  override fun onSessionStateChanged(state: SessionState) {',
+                  'obsługa stanu sesji',
+              ),
+          ]
+          for old, new, label in changes:
+              count = content.count(old)
+              print(f'Szukam: {label}: {count} dopasowan')
+              if count != 1:
+                  sys.exit(f'Wersja kodu nie pasuje: {label} ({count} dopasowan). Przerwano bez zapisywania zmian.')
+              content = content.replace(old, new, 1)
+
+          assert content.count('override fun onHMDMounted()') == 1
+          assert content.count('override fun onHMDUnmounted()') == 1
+          source.write_text(content, encoding='utf-8')
+          print('SUKCES: dodano obsluge zdejmowania i zakladania gogli')
           PY
+
           python3 - <<'PY'
           from pathlib import Path
           p = Path('mobile/android/app/build.gradle')
-          s = p.read_text(encoding='utf-8')
+          content = p.read_text(encoding='utf-8')
           old = 'resValue "string", "app_name", "Immich PR ${prNumber}"'
-          new = 'resValue "string", "app_name", "Immuch360 FANTO"'
-          assert old in s, 'Nie znaleziono nazwy aplikacji. Sprawdź wersję.'
-          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          count = content.count(old)
+          if count != 1:
+              raise SystemExit(f'Nie udalo sie ustalic nazwy oddzielnej aplikacji: {count} dopasowan')
+          p.write_text(content.replace(old, 'resValue "string", "app_name", "Immuch360 FANTO"', 1), encoding='utf-8')
+          print('SUKCES: ustawiono nazwe Immuch360 FANTO')
           PY
 
       - name: Zbuduj APK na Quest Pro (oddzielna aplikacja)
