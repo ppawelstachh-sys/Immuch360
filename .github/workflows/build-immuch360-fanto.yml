@@ -118,18 +118,47 @@ jobs:
           print('SUKCES: ustawiono nazwe Immuch360 FANTO')
           PY
 
+      - name: Zgodnosc z Androidem 12L (API 32) - biblioteka lokalna
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('mobile/android/app/src/quest/AndroidManifest.xml')
+          body = path.read_text(encoding='utf-8')
+          old = '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />'
+          new = '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" tools:node="replace" />'
+          if body.count(old) != 1:
+              raise SystemExit(f'Nieoczekiwany manifest Quest: {body.count(old)} wystapien uprawnienia do zamiany')
+          path.write_text(body.replace(old, new, 1), encoding='utf-8')
+          print('SUKCES: zezwolono na READ_EXTERNAL_STORAGE w Androidzie 12L i starszych')
+
+          gradle = Path('mobile/android/app/build.gradle')
+          s = gradle.read_text(encoding='utf-8')
+          old_name = 'resValue "string", "app_name", "Immuch360 FANTO"'
+          new_name = 'resValue "string", "app_name", "Immuch360 FANTO 12L"'
+          if s.count(old_name) != 1:
+              raise SystemExit('Nie znaleziono oczekiwanej nazwy FANTO w build.gradle')
+          gradle.write_text(s.replace(old_name, new_name, 1), encoding='utf-8')
+          print('SUKCES: nazwa aplikacji ustawiona jako Immuch360 FANTO 12L')
+          PY
+
       - name: Zbuduj APK na Quest Pro (oddzielna aplikacja)
         working-directory: mobile
         env:
-          PR_NUMBER: '360'
+          PR_NUMBER: '361'
           MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
         run: |
           mise exec -- flutter build apk --release --flavor quest --target-platform android-arm64 --android-project-arg arm64only=true
           ls -lh build/app/outputs/flutter-apk/app-quest-release.apk
 
+      - name: Sprawdz uprawnienie w gotowym APK
+        run: |
+          APK=mobile/build/app/outputs/flutter-apk/app-quest-release.apk
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump permissions "$APK" | tee apk_permissions.txt
+          grep -F 'android.permission.READ_EXTERNAL_STORAGE' apk_permissions.txt
+
       - name: Udostępnij gotowe APK
         uses: actions/upload-artifact@v4
         with:
-          name: Immuch360-FANTO-QuestPro-APK
+          name: Immuch360-FANTO-12L-APK
           path: mobile/build/app/outputs/flutter-apk/app-quest-release.apk
           retention-days: 7
