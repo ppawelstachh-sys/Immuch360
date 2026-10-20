@@ -21,7 +21,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: fanto-custom
-          sparse-checkout: fanto_outro_360.png
+          sparse-checkout: |
+            fanto_outro_360.png
+            fanto_outro_card.png
           sparse-checkout-cone-mode: false
 
       - name: Zainstaluj narzędzie mise
@@ -271,13 +273,148 @@ jobs:
           s=p.read_text(encoding='utf-8')
           old='resValue "string", "app_name", "Immuch360 FANTO"'
           assert s.count(old) == 1, 'Nie znaleziono nazwy bazowej FANTO'
-          p.write_text(s.replace(old,'resValue "string", "app_name", "Immuch360 FANTO Pokazy"',1), encoding='utf-8')
+          p.write_text(s.replace(old,'resValue "string", "app_name", "Immuch360 FANTO Pokazy v5"',1), encoding='utf-8')
           PYTHONNAME
+
+      - name: FANTO v5 - plansza na wprost spojrzenia
+        run: |
+          test -f fanto-custom/fanto_outro_card.png || { echo 'Brak grafiki fanto_outro_card.png w glownym katalogu forka'; exit 1; }
+          mkdir -p mobile/android/app/src/main/res/drawable-nodpi
+          cp fanto-custom/fanto_outro_card.png mobile/android/app/src/main/res/drawable-nodpi/fanto_outro_card.png
+          mkdir -p mobile/android/app/src/main/res/values mobile/android/app/src/main/res/layout
+          cat > mobile/android/app/src/main/res/values/fanto_outro_ids.xml <<'FANTO_IDS'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <item type="id" name="fanto_outro_panel" />
+          </resources>
+          FANTO_IDS
+          cat > mobile/android/app/src/main/res/layout/fanto_outro_panel.xml <<'FANTO_PANEL'
+          <?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:background="#000000">
+              <ImageView
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent"
+                  android:contentDescription="Dziękujemy za wspólną podróż"
+                  android:scaleType="fitCenter"
+                  android:src="@drawable/fanto_outro_card" />
+          </FrameLayout>
+          FANTO_PANEL
+          python3 - <<'FANTO_PY'
+          from pathlib import Path
+          import re
+          
+          p = Path('mobile/android/app/src/main/kotlin/app/alextran/immich/immersive/ImmersiveViewerActivity.kt')
+          s = p.read_text(encoding='utf-8')
+          
+          def once(label, before, after):
+              global s
+              n=s.count(before)
+              print(f'{label}: {n} dopasowan')
+              if n != 1:
+                  raise SystemExit(f'Blad kompatybilnosci: {label}. Oczekiwano dokladnie jednego dopasowania, znaleziono {n}.')
+              s=s.replace(before, after, 1)
+          
+          once('Pole panelu koncowego',
+               '  private var fantoOutroVisible = false',
+               '  private var fantoOutroVisible = false\n  /** FANTO v5: separate spatial UI panel placed at the last viewer head direction. */\n  private var fantoOutroEntity: Entity? = null')
+          
+          once('Schowanie panelu przy wyborze nowego filmu',
+               '    fantoOutroVisible = false\n    val media = request',
+               '    fantoOutroVisible = false\n    fantoOutroEntity?.setComponent(Visible(false))\n    val media = request')
+          
+          once('Utworzenie panelu w scenie VR',
+               '      systemManager.registerSystem(ImmersiveInputSystem(this))',
+               '''      fantoOutroEntity =
+                  Entity.createPanelEntity(
+                    R.id.fanto_outro_panel,
+                    Transform(Pose(Vector3(0f, 1.1f, 2.25f), Quaternion(0f, 0f, 0f))),
+                    Visible(false),
+                  )
+                systemManager.registerSystem(ImmersiveInputSystem(this))''')
+          
+          once('Rejestracja plaskiej planszy FANTO',
+               '    // 360 video: equirectangular compositor layer, as in MediaPlayerSample.',
+               '''    // FANTO v5: 2D outro panel, positioned with the viewer's actual head pose at the end.
+              LayoutXMLPanelRegistration(
+                R.id.fanto_outro_panel,
+                layoutIdCreator = { R.layout.fanto_outro_panel },
+                settingsCreator = {
+                  UIPanelSettings(
+                    shape = QuadShapeOptions(width = 2.8f, height = 1.6f),
+                    style = PanelStyleOptions(themeResourceId = R.style.ImmersivePanelTheme),
+                    display = DpDisplayOptions(width = 1400, height = 800, dpi = 260),
+                  )
+                },
+                panelSetupWithRootView = { _, _, _ -> },
+              ),
+              // 360 video: equirectangular compositor layer, as in MediaPlayerSample.''')
+          
+          # Working FANTO v3 code already handles end-of-film, turning off loops, and all VR controls.
+          # Replace only the end-of-film content (previously a panorama texture) by a plain black
+          # sphere plus a real 2D panel at the current, normalized gaze direction.
+          start='  private fun showFantoOutro() {'
+          end='  private val playerListener ='
+          if s.count(start)!=1 or s.count(end)!=1 or s.index(start)>s.index(end):
+              raise SystemExit('Nie odnaleziono jednoznacznie metody showFantoOutro()')
+          a=s.index(start)
+          b=s.index(end, a)
+          replacement='''  private fun showFantoOutro() {
+              if (fantoOutroVisible || request?.isVideo != true) return
+              fantoOutroVisible = true
+              playOnReturn = false
+              setInfoVisible(false, reposition = false)
+              hideFeedback()
+              videoRevealed = false
+              videoEntity?.setComponent(Visible(false))
+              halfSphereEntity?.setComponent(Visible(false))
+          
+              // Surround the visitor with pure black, not the last video frame.
+              try {
+                val black = android.graphics.Bitmap.createBitmap(16, 8, android.graphics.Bitmap.Config.ARGB_8888)
+                black.eraseColor(android.graphics.Color.BLACK)
+                applySkyboxBitmap(black)
+                setSkyboxStereoMode(StereoMode.None)
+                skyboxEntity?.setComponent(Visible(true))
+              } catch (e: Exception) {
+                Log.e(TAG, "FANTO: could not prepare black environment", e)
+              }
+          
+              // Use the HEAD pose captured by onFrame(), not the fixed room orientation.
+              val head = lastHeadPosition ?: Vector3(0f, 1.6f, 0f)
+              val f = lastHeadForward ?: Vector3(0f, 0f, 1f)
+              val length = sqrt(f.x * f.x + f.y * f.y + f.z * f.z)
+              val direction =
+                if (length < 1e-3f) Vector3(0f, 0f, 1f)
+                else Vector3(f.x / length, f.y / length, f.z / length)
+              val pos = head + (direction * 2.25f)
+              fantoOutroEntity?.apply {
+                setComponent(Transform(Pose(pos, Quaternion.lookRotation(direction))))
+                setComponent(Visible(true))
+              }
+              Log.i(TAG, "FANTO v5: outro panel in front of the viewer, fixed until next wearer")
+            }
+          '''
+          s=s[:a]+replacement+s[b:]
+          print('SUKCES: dynamiczna plansza zamiast stalej panoramy')
+          
+          once('Ukrycie planszy przed następnym odtworzeniem',
+               '      skyboxEntity?.setComponent(Visible(false))\n      videoEntity?.setComponent(Visible(false))',
+               '      skyboxEntity?.setComponent(Visible(false))\n      fantoOutroEntity?.setComponent(Visible(false))\n      videoEntity?.setComponent(Visible(false))')
+          
+          assert s.count('private fun showFantoOutro()') == 1
+          assert s.count('override fun onHMDMounted()') == 1
+          assert s.count('R.id.fanto_outro_panel') == 2
+          p.write_text(s, encoding='utf-8')
+          print('FANTO v5: zmiany kodu gotowe')
+          FANTO_PY
 
       - name: Zbuduj APK na Quest Pro (oddzielna aplikacja)
         working-directory: mobile
         env:
-          PR_NUMBER: '362'
+          PR_NUMBER: '365'
           MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
         run: |
           mise exec -- flutter build apk --release --flavor quest --target-platform android-arm64 --android-project-arg arm64only=true
@@ -286,6 +423,6 @@ jobs:
       - name: Udostępnij gotowe APK
         uses: actions/upload-artifact@v4
         with:
-          name: Immuch360-FANTO-Pokazy-APK
+          name: Immuch360-FANTO-Pokazy-v5-APK
           path: mobile/build/app/outputs/flutter-apk/app-quest-release.apk
           retention-days: 7
