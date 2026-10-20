@@ -17,6 +17,13 @@ jobs:
           ref: v3.3.0-rc.0-25
           persist-credentials: false
 
+      - name: Pobierz lokalne zasoby FANTO z własnego repozytorium
+        uses: actions/checkout@v4
+        with:
+          path: fanto-custom
+          sparse-checkout: fanto_outro_360.png
+          sparse-checkout-cone-mode: false
+
       - name: Zainstaluj narzędzie mise
         uses: jdx/mise-action@v2
         with:
@@ -118,47 +125,167 @@ jobs:
           print('SUKCES: ustawiono nazwe Immuch360 FANTO')
           PY
 
-      - name: Zgodnosc z Androidem 12L (API 32) - biblioteka lokalna
+      - name: FANTO - czarne podziekowanie, ukryte rece i panel odtwarzania
         run: |
-          python3 - <<'PY'
+          test -f fanto-custom/fanto_outro_360.png || { echo 'BRAK fanto_outro_360.png w głównym katalogu Twojego forka'; exit 1; }
+          mkdir -p mobile/android/app/src/main/res/drawable-nodpi
+          cp fanto-custom/fanto_outro_360.png mobile/android/app/src/main/res/drawable-nodpi/fanto_outro_360.png
+          python3 - <<'PYTHONPATCH'
+          #!/usr/bin/env python3
+          """Immuch360 v3.3.0-rc.0-25, after the working FANTO v2 restart patch.
+          Experimental, test on Meta Quest Pro before public use.
+          """
           from pathlib import Path
-          path = Path('mobile/android/app/src/quest/AndroidManifest.xml')
-          body = path.read_text(encoding='utf-8')
-          old = '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />'
-          new = '<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" tools:node="replace" />'
-          if body.count(old) != 1:
-              raise SystemExit(f'Nieoczekiwany manifest Quest: {body.count(old)} wystapien uprawnienia do zamiany')
-          path.write_text(body.replace(old, new, 1), encoding='utf-8')
-          print('SUKCES: zezwolono na READ_EXTERNAL_STORAGE w Androidzie 12L i starszych')
-
-          gradle = Path('mobile/android/app/build.gradle')
-          s = gradle.read_text(encoding='utf-8')
-          old_name = 'resValue "string", "app_name", "Immuch360 FANTO"'
-          new_name = 'resValue "string", "app_name", "Immuch360 FANTO 12L"'
-          if s.count(old_name) != 1:
-              raise SystemExit('Nie znaleziono oczekiwanej nazwy FANTO w build.gradle')
-          gradle.write_text(s.replace(old_name, new_name, 1), encoding='utf-8')
-          print('SUKCES: nazwa aplikacji ustawiona jako Immuch360 FANTO 12L')
-          PY
+          
+          src = Path('mobile/android/app/src/main/kotlin/app/alextran/immich/immersive/ImmersiveViewerActivity.kt')
+          if not src.is_file():
+              raise SystemExit(f'Brak źródła: {src}')
+          s = src.read_text(encoding='utf-8')
+          
+          
+          def once(label, old, new):
+              global s
+              n = s.count(old)
+              print(f'{label}: {n} dopasowań')
+              if n != 1:
+                  raise SystemExit(f'Kod nie pasuje do oryginalnej wersji ({label}). Nie zapisano zmian.')
+              s = s.replace(old, new, 1)
+          
+          once('AvatarSystem import',
+               'import com.meta.spatial.toolkit.AppSystemActivity',
+               'import com.meta.spatial.toolkit.AvatarSystem\nimport com.meta.spatial.isdk.IsdkSystem\nimport com.meta.spatial.toolkit.AppSystemActivity')
+          
+          once('Stan ekranu końcowego',
+               '  private var playOnReturn = false',
+               '  private var playOnReturn = false\n'
+               '  /** FANTO: after video completion, show a static black 360-degree thank-you card. */\n'
+               '  private var fantoOutroVisible = false')
+          
+          once('Ukrycie postaci dłoni i kontrolerów',
+               '      systemManager.registerSystem(ImmersiveInputSystem(this))',
+               '      systemManager.registerSystem(ImmersiveInputSystem(this))\n'
+               '      // FANTO kiosk: no hand/controller meshes or rays in the immersive viewer.\n'
+               '      try {\n'
+               '        systemManager.findSystem<AvatarSystem>().apply {\n'
+               '          setShowHands(false)\n'
+               '          setShowControllers(false)\n'
+               '        }\n'
+               '      } catch (e: Exception) {\n'
+               '        Log.w(TAG, "FANTO: avatar visibility configuration failed", e)\n'
+               '      }\n'
+               '      try {\n'
+               '        systemManager.findSystem<IsdkSystem>().active = false\n'
+               '      } catch (e: Exception) {\n'
+               '        Log.w(TAG, "FANTO: cursor disable failed", e)\n'
+               '      }')
+          
+          once('Zresetuj ekran końcowy przy wyborze następnego pliku',
+               '  private fun showRequest(revealInfo: Boolean = true) {\n    val media = request',
+               '  private fun showRequest(revealInfo: Boolean = true) {\n'
+               '    fantoOutroVisible = false\n'
+               '    val media = request')
+          
+          once('Ukryj pasek przy otwieraniu filmu',
+               '    if (revealInfo) setInfoVisible(true, reposition = true)',
+               '    if (media.isVideo) setInfoVisible(false, reposition = false)\n'
+               '    else if (revealInfo) setInfoVisible(true, reposition = true)')
+          
+          once('Blokowanie panelu odtwarzania podczas pokazu',
+               '  private fun setInfoVisible(visible: Boolean, reposition: Boolean) {',
+               '  private fun setInfoVisible(visible: Boolean, reposition: Boolean) {\n'
+               '    // FANTO: never show the transport panel on top of a public 360 video.\n'
+               '    if (visible && request?.isVideo == true) return')
+          
+          start = '  override fun onButtonsPressed(controllerBits: Int, handBits: Int) {'
+          end = '  @Deprecated("Deprecated in Java")\n  override fun onBackPressed()'
+          if s.count(start) != 1 or s.count(end) != 1 or s.index(start) > s.index(end):
+              raise SystemExit('Nie znaleziono jednoznacznie obsługi przycisków. Nie zapisano zmian.')
+          i,j=s.index(start),s.index(end)
+          s=s[:i] + '''  // FANTO: ignore guest hands/controller gestures. Keep only B/Y exit for an operator.
+            override fun onButtonsPressed(controllerBits: Int, handBits: Int) {
+              val actions = ImmersiveControls.actionsFor(controllerBits, handBits, false)
+              if (ImmersiveControls.Action.CLOSE in actions) close()
+            }
+          ''' + s[j:]
+          print('Obsługa przycisków: ograniczona do wyjścia')
+          
+          once('Wyłącz pętlę filmu',
+               '        it.repeatMode = Player.REPEAT_MODE_ONE',
+               '        it.repeatMode = Player.REPEAT_MODE_OFF')
+          
+          once('Zabezpiecz odtwarzacz przed odkryciem filmu podczas napisu końcowego',
+               '  private fun revealVideo() {\n    if (videoRevealed',
+               '  private fun revealVideo() {\n    if (fantoOutroVisible) return\n    if (videoRevealed')
+          
+          once('Obsługa zakończenia filmu',
+               '          Player.STATE_BUFFERING -> setStatus(getString(R.string.immersive_buffering))',
+               '          Player.STATE_BUFFERING -> setStatus(getString(R.string.immersive_buffering))\n'
+               '          Player.STATE_ENDED -> showFantoOutro()')
+          
+          intro = '''  /** FANTO: full black panorama with supplied logo and thanks, retained until the next HMD mount. */
+            private fun showFantoOutro() {
+              if (fantoOutroVisible || request?.isVideo != true) return
+              fantoOutroVisible = true
+              playOnReturn = false
+              setInfoVisible(false, reposition = false)
+              hideFeedback()
+              // Do not keep the last video frame above the black background.
+              videoRevealed = false
+              videoEntity?.setComponent(Visible(false))
+              halfSphereEntity?.setComponent(Visible(false))
+              val bitmap = BitmapFactory.decodeResource(resources, R.drawable.fanto_outro_360)
+              if (bitmap != null) {
+                try {
+                  applySkyboxBitmap(bitmap) // consumes the bitmap and resets the material texture
+                  setSkyboxStereoMode(StereoMode.None) // the card must be identical for both eyes
+                } catch (e: Exception) {
+                  Log.e(TAG, "FANTO outro texture failed", e)
+                }
+              }
+              skyboxEntity?.setComponent(Visible(true))
+              Log.i(TAG, "FANTO: showing end screen until the next visitor wears the headset")
+            }
+          '''
+          once('Wstaw ekran końcowy',
+               '  private val playerListener =\n    object : Player.Listener {',
+               intro+'  private val playerListener =\n    object : Player.Listener {')
+          
+          once('Schowaj ekran końcowy przy nowym widzu',
+               '    if (request?.isVideo == true && currentVideoUrl != null) {\n      player?.seekTo(0L)',
+               '    if (fantoOutroVisible) {\n'
+               '      fantoOutroVisible = false\n'
+               '      skyboxEntity?.setComponent(Visible(false))\n'
+               '      videoEntity?.setComponent(Visible(false))\n'
+               '      videoRevealed = false\n'
+               '    }\n'
+               '    if (request?.isVideo == true && currentVideoUrl != null) {\n      player?.seekTo(0L)')
+          
+          if s.count('override fun onHMDMounted()') != 1 or s.count('override fun onHMDUnmounted()') != 1:
+              raise SystemExit('Niepoprawna liczba metod HMD! Nie zapisano zmian.')
+          src.write_text(s, encoding='utf-8')
+          print('SUKCES: FANTO v3 code patch applied.')
+          PYTHONPATCH
+          python3 - <<'PYTHONNAME'
+          from pathlib import Path
+          p=Path('mobile/android/app/build.gradle')
+          s=p.read_text(encoding='utf-8')
+          old='resValue "string", "app_name", "Immuch360 FANTO"'
+          assert s.count(old) == 1, 'Nie znaleziono nazwy bazowej FANTO'
+          p.write_text(s.replace(old,'resValue "string", "app_name", "Immuch360 FANTO Pokazy"',1), encoding='utf-8')
+          PYTHONNAME
 
       - name: Zbuduj APK na Quest Pro (oddzielna aplikacja)
         working-directory: mobile
         env:
-          PR_NUMBER: '361'
+          PR_NUMBER: '362'
           MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
         run: |
           mise exec -- flutter build apk --release --flavor quest --target-platform android-arm64 --android-project-arg arm64only=true
           ls -lh build/app/outputs/flutter-apk/app-quest-release.apk
 
-      - name: Sprawdz uprawnienie w gotowym APK
-        run: |
-          APK=mobile/build/app/outputs/flutter-apk/app-quest-release.apk
-          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump permissions "$APK" | tee apk_permissions.txt
-          grep -F 'android.permission.READ_EXTERNAL_STORAGE' apk_permissions.txt
-
       - name: Udostępnij gotowe APK
         uses: actions/upload-artifact@v4
         with:
-          name: Immuch360-FANTO-12L-APK
+          name: Immuch360-FANTO-Pokazy-APK
           path: mobile/build/app/outputs/flutter-apk/app-quest-release.apk
           retention-days: 7
