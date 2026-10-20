@@ -345,7 +345,7 @@ jobs:
                   UIPanelSettings(
                     shape = QuadShapeOptions(width = 2.8f, height = 1.6f),
                     style = PanelStyleOptions(themeResourceId = R.style.ImmersivePanelTheme),
-                    display = DpDisplayOptions(width = 1400, height = 800, dpi = 260),
+                    display = DpDisplayOptions(width = 1400f, height = 800f, dpi = 260),
                   )
                 },
                 panelSetupWithRootView = { _, _, _ -> },
