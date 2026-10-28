@@ -1,0 +1,1005 @@
+name: Immuch360 FANTO v9 TEST - odtwarzacz i ponowny start
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quest-pro-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pobierz dokładnie wersję 3.3.0-rc.0-25
+        uses: actions/checkout@v4
+        with:
+          repository: freeKC/Immuch360
+          ref: v3.3.0-rc.0-25
+          persist-credentials: false
+
+      - name: Pobierz lokalne zasoby FANTO z własnego repozytorium
+        uses: actions/checkout@v4
+        with:
+          path: fanto-custom
+          sparse-checkout: |
+            fanto_outro_360.png
+            fanto_outro_card.png
+          sparse-checkout-cone-mode: false
+
+      - name: Zainstaluj narzędzie mise
+        uses: jdx/mise-action@v2
+        with:
+          install: false
+          cache: true
+
+      - name: Pobierz Flutter, Java, Node i generator
+        env:
+          MISE_YES: '1'
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+        run: |
+          mise install node java "npm:@openapitools/openapi-generator-cli"
+          cd mobile
+          mise install
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0'
+
+      - name: Wygeneruj wymagany kod projektu
+        env:
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+        run: |
+          mise //mobile:install:ci
+          mise //mobile:codegen
+
+      - name: Dodaj restart filmu po zalozeniu gogli (FANTO v2)
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import sys
+
+          source = Path('mobile/android/app/src/main/kotlin/app/alextran/immich/immersive/ImmersiveViewerActivity.kt')
+          if not source.is_file():
+              sys.exit(f'Nie znaleziono pliku odtwarzacza: {source}')
+          content = source.read_text(encoding='utf-8')
+
+          # Kotwice sprawdzone w źródłach wersji v3.3.0-rc.0-25.
+          # Nie dopasowujemy całych komentarzy: ich zmiana powodowała awarię poprzedniej wersji skryptu.
+          changes = [
+              (
+                  '  private var playOnReturn = false',
+                  '  private var playOnReturn = false\n'
+                  '  /** FANTO: remembers a real headset removal, not system menu focus changes. */\n'
+                  '  private var headsetUnworn = false',
+                  'pole playOnReturn',
+              ),
+              (
+                  '  private fun playbackAllowed(): Boolean = resumed && focused',
+                  '  private fun playbackAllowed(): Boolean = resumed && focused && !headsetUnworn',
+                  'warunek playbackAllowed',
+              ),
+              (
+                  '  override fun onSessionStateChanged(state: SessionState) {',
+                  '  /** FANTO: pause when the headset is removed. */\n'
+                  '  override fun onHMDUnmounted() {\n'
+                  '    super.onHMDUnmounted()\n'
+                  '    headsetUnworn = true\n'
+                  '    holdPlayback()\n'
+                  '  }\n\n'
+                  '  /** FANTO: restart from zero whenever the next visitor puts the headset on. */\n'
+                  '  override fun onHMDMounted() {\n'
+                  '    super.onHMDMounted()\n'
+                  '    if (!headsetUnworn) return\n'
+                  '    headsetUnworn = false\n'
+                  '    if (request?.isVideo == true && currentVideoUrl != null) {\n'
+                  '      player?.seekTo(0L)\n'
+                  '      playOnReturn = true\n'
+                  '    }\n'
+                  '    resumeHeldPlayback()\n'
+                  '  }\n\n'
+                  '  override fun onSessionStateChanged(state: SessionState) {',
+                  'obsługa stanu sesji',
+              ),
+          ]
+          for old, new, label in changes:
+              count = content.count(old)
+              print(f'Szukam: {label}: {count} dopasowan')
+              if count != 1:
+                  sys.exit(f'Wersja kodu nie pasuje: {label} ({count} dopasowan). Przerwano bez zapisywania zmian.')
+              content = content.replace(old, new, 1)
+
+          assert content.count('override fun onHMDMounted()') == 1
+          assert content.count('override fun onHMDUnmounted()') == 1
+          source.write_text(content, encoding='utf-8')
+          print('SUKCES: dodano obsluge zdejmowania i zakladania gogli')
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('mobile/android/app/build.gradle')
+          content = p.read_text(encoding='utf-8')
+          old = 'resValue "string", "app_name", "Immich PR ${prNumber}"'
+          count = content.count(old)
+          if count != 1:
+              raise SystemExit(f'Nie udalo sie ustalic nazwy oddzielnej aplikacji: {count} dopasowan')
+          p.write_text(content.replace(old, 'resValue "string", "app_name", "Immuch360 FANTO"', 1), encoding='utf-8')
+          print('SUKCES: ustawiono nazwe Immuch360 FANTO')
+          PY
+
+      - name: FANTO - czarne podziekowanie, ukryte rece i panel odtwarzania
+        run: |
+          test -f fanto-custom/fanto_outro_360.png || { echo 'BRAK fanto_outro_360.png w głównym katalogu Twojego forka'; exit 1; }
+          mkdir -p mobile/android/app/src/main/res/drawable-nodpi
+          cp fanto-custom/fanto_outro_360.png mobile/android/app/src/main/res/drawable-nodpi/fanto_outro_360.png
+          python3 - <<'PYTHONPATCH'
+          #!/usr/bin/env python3
+          """Immuch360 v3.3.0-rc.0-25, after the working FANTO v2 restart patch.
+          Experimental, test on Meta Quest Pro before public use.
+          """
+          from pathlib import Path
+          
+          src = Path('mobile/android/app/src/main/kotlin/app/alextran/immich/immersive/ImmersiveViewerActivity.kt')
+          if not src.is_file():
+              raise SystemExit(f'Brak źródła: {src}')
+          s = src.read_text(encoding='utf-8')
+          
+          
+          def once(label, old, new):
+              global s
+              n = s.count(old)
+              print(f'{label}: {n} dopasowań')
+              if n != 1:
+                  raise SystemExit(f'Kod nie pasuje do oryginalnej wersji ({label}). Nie zapisano zmian.')
+              s = s.replace(old, new, 1)
+          
+          once('AvatarSystem import',
+               'import com.meta.spatial.toolkit.AppSystemActivity',
+               'import com.meta.spatial.toolkit.AvatarSystem\nimport com.meta.spatial.isdk.IsdkSystem\nimport com.meta.spatial.toolkit.AppSystemActivity')
+          
+          once('Stan ekranu końcowego',
+               '  private var playOnReturn = false',
+               '  private var playOnReturn = false\n'
+               '  /** FANTO: after video completion, show a static black 360-degree thank-you card. */\n'
+               '  private var fantoOutroVisible = false')
+          
+          once('Ukrycie postaci dłoni i kontrolerów',
+               '      systemManager.registerSystem(ImmersiveInputSystem(this))',
+               '      systemManager.registerSystem(ImmersiveInputSystem(this))\n'
+               '      // FANTO kiosk: no hand/controller meshes or rays in the immersive viewer.\n'
+               '      try {\n'
+               '        systemManager.findSystem<AvatarSystem>().apply {\n'
+               '          setShowHands(false)\n'
+               '          setShowControllers(false)\n'
+               '        }\n'
+               '      } catch (e: Exception) {\n'
+               '        Log.w(TAG, "FANTO: avatar visibility configuration failed", e)\n'
+               '      }\n'
+               '      try {\n'
+               '        systemManager.findSystem<IsdkSystem>().active = false\n'
+               '      } catch (e: Exception) {\n'
+               '        Log.w(TAG, "FANTO: cursor disable failed", e)\n'
+               '      }')
+          
+          once('Zresetuj ekran końcowy przy wyborze następnego pliku',
+               '  private fun showRequest(revealInfo: Boolean = true) {\n    val media = request',
+               '  private fun showRequest(revealInfo: Boolean = true) {\n'
+               '    fantoOutroVisible = false\n'
+               '    val media = request')
+          
+          once('Ukryj pasek przy otwieraniu filmu',
+               '    if (revealInfo) setInfoVisible(true, reposition = true)',
+               '    if (media.isVideo) setInfoVisible(false, reposition = false)\n'
+               '    else if (revealInfo) setInfoVisible(true, reposition = true)')
+          
+          once('Blokowanie panelu odtwarzania podczas pokazu',
+               '  private fun setInfoVisible(visible: Boolean, reposition: Boolean) {',
+               '  private fun setInfoVisible(visible: Boolean, reposition: Boolean) {\n'
+               '    // FANTO: never show the transport panel on top of a public 360 video.\n'
+               '    if (visible && request?.isVideo == true) return')
+          
+          start = '  override fun onButtonsPressed(controllerBits: Int, handBits: Int) {'
+          end = '  @Deprecated("Deprecated in Java")\n  override fun onBackPressed()'
+          if s.count(start) != 1 or s.count(end) != 1 or s.index(start) > s.index(end):
+              raise SystemExit('Nie znaleziono jednoznacznie obsługi przycisków. Nie zapisano zmian.')
+          i,j=s.index(start),s.index(end)
+          s=s[:i] + '''  // FANTO: ignore guest hands/controller gestures. Keep only B/Y exit for an operator.
+            override fun onButtonsPressed(controllerBits: Int, handBits: Int) {
+              val actions = ImmersiveControls.actionsFor(controllerBits, handBits, false)
+              if (ImmersiveControls.Action.CLOSE in actions) close()
+            }
+          ''' + s[j:]
+          print('Obsługa przycisków: ograniczona do wyjścia')
+          
+          once('Wyłącz pętlę filmu',
+               '        it.repeatMode = Player.REPEAT_MODE_ONE',
+               '        it.repeatMode = Player.REPEAT_MODE_OFF')
+          
+          once('Zabezpiecz odtwarzacz przed odkryciem filmu podczas napisu końcowego',
+               '  private fun revealVideo() {\n    if (videoRevealed',
+               '  private fun revealVideo() {\n    if (fantoOutroVisible) return\n    if (videoRevealed')
+          
+          once('Obsługa zakończenia filmu',
+               '          Player.STATE_BUFFERING -> setStatus(getString(R.string.immersive_buffering))',
+               '          Player.STATE_BUFFERING -> setStatus(getString(R.string.immersive_buffering))\n'
+               '          Player.STATE_ENDED -> showFantoOutro()')
+          
+          intro = '''  /** FANTO: full black panorama with supplied logo and thanks, retained until the next HMD mount. */
+            private fun showFantoOutro() {
+              if (fantoOutroVisible || request?.isVideo != true) return
+              fantoOutroVisible = true
+              playOnReturn = false
+              setInfoVisible(false, reposition = false)
+              hideFeedback()
+              // Do not keep the last video frame above the black background.
+              videoRevealed = false
+              videoEntity?.setComponent(Visible(false))
+              halfSphereEntity?.setComponent(Visible(false))
+              val bitmap = BitmapFactory.decodeResource(resources, R.drawable.fanto_outro_360)
+              if (bitmap != null) {
+                try {
+                  applySkyboxBitmap(bitmap) // consumes the bitmap and resets the material texture
+                  setSkyboxStereoMode(StereoMode.None) // the card must be identical for both eyes
+                } catch (e: Exception) {
+                  Log.e(TAG, "FANTO outro texture failed", e)
+                }
+              }
+              skyboxEntity?.setComponent(Visible(true))
+              Log.i(TAG, "FANTO: showing end screen until the next visitor wears the headset")
+            }
+          '''
+          once('Wstaw ekran końcowy',
+               '  private val playerListener =\n    object : Player.Listener {',
+               intro+'  private val playerListener =\n    object : Player.Listener {')
+          
+          once('Schowaj ekran końcowy przy nowym widzu',
+               '    if (request?.isVideo == true && currentVideoUrl != null) {\n      player?.seekTo(0L)',
+               '    if (fantoOutroVisible) {\n'
+               '      fantoOutroVisible = false\n'
+               '      skyboxEntity?.setComponent(Visible(false))\n'
+               '      videoEntity?.setComponent(Visible(false))\n'
+               '      videoRevealed = false\n'
+               '    }\n'
+               '    if (request?.isVideo == true && currentVideoUrl != null) {\n      player?.seekTo(0L)')
+          
+          if s.count('override fun onHMDMounted()') != 1 or s.count('override fun onHMDUnmounted()') != 1:
+              raise SystemExit('Niepoprawna liczba metod HMD! Nie zapisano zmian.')
+          src.write_text(s, encoding='utf-8')
+          print('SUKCES: FANTO v3 code patch applied.')
+          PYTHONPATCH
+          python3 - <<'PYTHONNAME'
+          from pathlib import Path
+          p=Path('mobile/android/app/build.gradle')
+          s=p.read_text(encoding='utf-8')
+          old='resValue "string", "app_name", "Immuch360 FANTO"'
+          assert s.count(old) == 1, 'Nie znaleziono nazwy bazowej FANTO'
+          p.write_text(s.replace(old,'resValue "string", "app_name", "Immuch360 FANTO Pokazy v5"',1), encoding='utf-8')
+          PYTHONNAME
+
+      - name: FANTO v5 - plansza na wprost spojrzenia
+        run: |
+          test -f fanto-custom/fanto_outro_card.png || { echo 'Brak grafiki fanto_outro_card.png w glownym katalogu forka'; exit 1; }
+          mkdir -p mobile/android/app/src/main/res/drawable-nodpi
+          cp fanto-custom/fanto_outro_card.png mobile/android/app/src/main/res/drawable-nodpi/fanto_outro_card.png
+          mkdir -p mobile/android/app/src/main/res/values mobile/android/app/src/main/res/layout
+          cat > mobile/android/app/src/main/res/values/fanto_outro_ids.xml <<'FANTO_IDS'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <item type="id" name="fanto_outro_panel" />
+          </resources>
+          FANTO_IDS
+          cat > mobile/android/app/src/main/res/layout/fanto_outro_panel.xml <<'FANTO_PANEL'
+          <?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:background="#000000">
+              <ImageView
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent"
+                  android:contentDescription="Dziękujemy za wspólną podróż"
+                  android:scaleType="fitCenter"
+                  android:src="@drawable/fanto_outro_card" />
+          </FrameLayout>
+          FANTO_PANEL
+          python3 - <<'FANTO_PY'
+          from pathlib import Path
+          import re
+          
+          p = Path('mobile/android/app/src/main/kotlin/app/alextran/immich/immersive/ImmersiveViewerActivity.kt')
+          s = p.read_text(encoding='utf-8')
+          
+          def once(label, before, after):
+              global s
+              n=s.count(before)
+              print(f'{label}: {n} dopasowan')
+              if n != 1:
+                  raise SystemExit(f'Blad kompatybilnosci: {label}. Oczekiwano dokladnie jednego dopasowania, znaleziono {n}.')
+              s=s.replace(before, after, 1)
+          
+          once('Pole panelu koncowego',
+               '  private var fantoOutroVisible = false',
+               '  private var fantoOutroVisible = false\n  /** FANTO v5: separate spatial UI panel placed at the last viewer head direction. */\n  private var fantoOutroEntity: Entity? = null')
+          
+          once('Schowanie panelu przy wyborze nowego filmu',
+               '    fantoOutroVisible = false\n    val media = request',
+               '    fantoOutroVisible = false\n    fantoOutroEntity?.setComponent(Visible(false))\n    val media = request')
+          
+          once('Utworzenie panelu w scenie VR',
+               '      systemManager.registerSystem(ImmersiveInputSystem(this))',
+               '''      fantoOutroEntity =
+                  Entity.createPanelEntity(
+                    R.id.fanto_outro_panel,
+                    Transform(Pose(Vector3(0f, 1.1f, 2.25f), Quaternion(0f, 0f, 0f))),
+                    Visible(false),
+                  )
+                systemManager.registerSystem(ImmersiveInputSystem(this))''')
+          
+          once('Rejestracja plaskiej planszy FANTO',
+               '    // 360 video: equirectangular compositor layer, as in MediaPlayerSample.',
+               '''    // FANTO v5: 2D outro panel, positioned with the viewer's actual head pose at the end.
+              LayoutXMLPanelRegistration(
+                R.id.fanto_outro_panel,
+                layoutIdCreator = { R.layout.fanto_outro_panel },
+                settingsCreator = {
+                  UIPanelSettings(
+                    shape = QuadShapeOptions(width = 2.8f, height = 1.6f),
+                    style = PanelStyleOptions(themeResourceId = R.style.ImmersivePanelTheme),
+                    display = DpDisplayOptions(width = 1400f, height = 800f, dpi = 260),
+                  )
+                },
+                panelSetupWithRootView = { _, _, _ -> },
+              ),
+              // 360 video: equirectangular compositor layer, as in MediaPlayerSample.''')
+          
+          # Working FANTO v3 code already handles end-of-film, turning off loops, and all VR controls.
+          # Replace only the end-of-film content (previously a panorama texture) by a plain black
+          # sphere plus a real 2D panel at the current, normalized gaze direction.
+          start='  private fun showFantoOutro() {'
+          end='  private val playerListener ='
+          if s.count(start)!=1 or s.count(end)!=1 or s.index(start)>s.index(end):
+              raise SystemExit('Nie odnaleziono jednoznacznie metody showFantoOutro()')
+          a=s.index(start)
+          b=s.index(end, a)
+          replacement='''  private fun showFantoOutro() {
+              if (fantoOutroVisible || request?.isVideo != true) return
+              fantoOutroVisible = true
+              playOnReturn = false
+              setInfoVisible(false, reposition = false)
+              hideFeedback()
+              videoRevealed = false
+              videoEntity?.setComponent(Visible(false))
+              halfSphereEntity?.setComponent(Visible(false))
+          
+              // Surround the visitor with pure black, not the last video frame.
+              try {
+                val black = android.graphics.Bitmap.createBitmap(16, 8, android.graphics.Bitmap.Config.ARGB_8888)
+                black.eraseColor(android.graphics.Color.BLACK)
+                applySkyboxBitmap(black)
+                setSkyboxStereoMode(StereoMode.None)
+                skyboxEntity?.setComponent(Visible(true))
+              } catch (e: Exception) {
+                Log.e(TAG, "FANTO: could not prepare black environment", e)
+              }
+          
+              // Use the HEAD pose captured by onFrame(), not the fixed room orientation.
+              val head = lastHeadPosition ?: Vector3(0f, 1.6f, 0f)
+              val f = lastHeadForward ?: Vector3(0f, 0f, 1f)
+              val length = sqrt(f.x * f.x + f.y * f.y + f.z * f.z)
+              val direction =
+                if (length < 1e-3f) Vector3(0f, 0f, 1f)
+                else Vector3(f.x / length, f.y / length, f.z / length)
+              val pos = head + (direction * 2.25f)
+              fantoOutroEntity?.apply {
+                setComponent(Transform(Pose(pos, Quaternion.lookRotation(direction))))
+                setComponent(Visible(true))
+              }
+              Log.i(TAG, "FANTO v5: outro panel in front of the viewer, fixed until next wearer")
+            }
+          '''
+          s=s[:a]+replacement+s[b:]
+          print('SUKCES: dynamiczna plansza zamiast stalej panoramy')
+          
+          once('Ukrycie planszy przed następnym odtworzeniem',
+               '      skyboxEntity?.setComponent(Visible(false))\n      videoEntity?.setComponent(Visible(false))',
+               '      skyboxEntity?.setComponent(Visible(false))\n      fantoOutroEntity?.setComponent(Visible(false))\n      videoEntity?.setComponent(Visible(false))')
+          
+          assert s.count('private fun showFantoOutro()') == 1
+          assert s.count('override fun onHMDMounted()') == 1
+          assert s.count('R.id.fanto_outro_panel') == 2
+          p.write_text(s, encoding='utf-8')
+          print('FANTO v5: zmiany kodu gotowe')
+          FANTO_PY
+
+      - name: FANTO v6 TEST - systemowy MediaPlayer dla lokalnych filmow 360
+        run: |
+          python3 - <<'FANTO_NATIVE_PY'
+          #!/usr/bin/env python3
+          """FANTO v6 TEST: Android MediaPlayer local-video path for Meta Quest.
+
+          Expected input: upstream Immuch360 v3.3.0-rc.0-25 after the working FANTO v5 patches.
+          Fails closed if source anchors differ.
+          """
+          from pathlib import Path
+          p = Path('mobile/android/app/src/main/kotlin/app/alextran/immich/immersive/ImmersiveViewerActivity.kt')
+          s = p.read_text(encoding='utf-8')
+
+          def once(label, before, after):
+              global s
+              count=s.count(before)
+              print(f'FANTO v6 {label}: {count} matches')
+              if count != 1:
+                  raise SystemExit(f'FANTO v6: abort; source mismatch for {label}, expected exactly 1.')
+              s=s.replace(before, after, 1)
+
+          # No extra dependencies; Android's MediaPlayer is part of the Quest runtime.
+          once('Android MediaPlayer import',
+           'import android.net.Uri',
+           'import android.net.Uri\nimport android.media.MediaPlayer\nimport android.media.AudioAttributes as AndroidAudioAttributes')
+
+          once('Native video state',
+           '  private var videoSurface: Surface? = null',
+           '''  private var videoSurface: Surface? = null
+            /** FANTO v6 TEST: separate system media pipeline for LOCAL equirectangular MP4s. */
+            private var fantoNative: MediaPlayer? = null
+            private var fantoNativeReady = false
+            private var fantoNativeUrl: String? = null''')
+
+          once('Attach native player to immersive video surface',
+           '          videoSurface = surface\n          player?.let { attachVideoSurface(it, surface) }',
+           '''          videoSurface = surface
+                    fantoNative?.let { native ->
+                      try { native.setSurface(surface) }
+                      catch (e: Exception) { Log.e(TAG, "FANTO native setSurface failed", e) }
+                    }
+                    player?.let { attachVideoSurface(it, surface) }''')
+
+          # Prefer native only for the original, normal, local videos. Keep all streaming, raw lens, stereo etc in upstream.
+          # Content URIs and file URIs are the app's normal local media paths.
+          new_methods = '''
+            // ---------------------------------------------------------------------------------------------
+            // FANTO v6 TEST: Android platform MediaPlayer for ordinary local 360 videos.
+            // Immuch360 Media3/ExoPlayer can play audio yet fail to render video on some Quest/Horizon OS
+            // combinations. This experiment bypasses that renderer for local equirectangular files only,
+            // sending the decoded video to the SAME Spatial SDK VideoSurfacePanelRegistration Surface.
+            private fun fantoUseNative(media: MediaRequest): Boolean {
+              if (!media.isVideo || media.isRawVideo) return false
+              val scheme = Uri.parse(media.url).scheme?.lowercase()
+              return scheme == "file" || scheme == "content"
+            }
+
+            private fun fantoReleaseNative() {
+              val old = fantoNative
+              fantoNative = null
+              fantoNativeReady = false
+              fantoNativeUrl = null
+              if (old != null) {
+                try { old.reset() } catch (_: Exception) {}
+                try { old.release() } catch (_: Exception) {}
+              }
+            }
+
+            private fun fantoStartNative(media: MediaRequest) {
+              fantoReleaseNative()
+              releasePlayer() // Only one pipeline may own the MediaPanel Surface.
+              val url = media.url
+              currentVideoUrl = url
+              playOnReturn = false
+              decoderWarning = null
+              Log.i(TAG, "FANTO v6: native Android MediaPlayer for local 360 video")
+              try {
+                val native = MediaPlayer()
+                fantoNative = native
+                fantoNativeUrl = url
+                native.setAudioAttributes(
+                  AndroidAudioAttributes.Builder()
+                    .setUsage(AndroidAudioAttributes.USAGE_MEDIA)
+                    .setContentType(AndroidAudioAttributes.CONTENT_TYPE_MOVIE)
+                    .build()
+                )
+                native.setOnPreparedListener { ready ->
+                  if (ready !== fantoNative || currentVideoUrl != url) return@setOnPreparedListener
+                  fantoNativeReady = true
+                  if (media.startPositionMs > 0L) {
+                    ready.seekTo(media.startPositionMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                  }
+                  Log.i(TAG, "FANTO v6 native prepared: duration=${ready.duration} ms")
+                  if (playbackAllowed()) ready.start() else playOnReturn = true
+                  updateProgress()
+                }
+                native.setOnInfoListener { active, code, _ ->
+                  if (active === fantoNative && code == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+                    Log.i(TAG, "FANTO v6 native first video frame")
+                    revealVideo()
+                    true
+                  } else false
+                }
+                native.setOnCompletionListener { completed ->
+                  if (completed === fantoNative) showFantoOutro()
+                }
+                native.setOnErrorListener { failed, what, extra ->
+                  if (failed === fantoNative) {
+                    Log.e(TAG, "FANTO v6 native playback error $what/$extra")
+                    showError("FANTO native MediaPlayer error $what/$extra")
+                  }
+                  true
+                }
+                videoSurface?.let { native.setSurface(it) }
+                native.setDataSource(this, Uri.parse(url))
+                native.prepareAsync()
+              } catch (e: Exception) {
+                Log.e(TAG, "FANTO v6 native media preparation failed", e)
+                fantoReleaseNative()
+                showError("FANTO native player: ${e.javaClass.simpleName}")
+              }
+            }
+
+          '''
+          once('Insert native pipeline helpers',
+           '  private fun showVideo(media: MediaRequest) {',
+           new_methods + '  private fun showVideo(media: MediaRequest) {')
+
+          once('Stop previous native video when starting another',
+           '  private fun showVideo(media: MediaRequest) {\n    hideStereoQuad()',
+           '  private fun showVideo(media: MediaRequest) {\n    fantoReleaseNative()\n    hideStereoQuad()')
+
+          once('Start native local path before ExoPlayer setup',
+           '''    setStatus(getString(R.string.immersive_loading))
+              if (ensurePlayer(media.url, media) == null) {''',
+           '''    setStatus(getString(R.string.immersive_loading))
+              if (fantoUseNative(media)) {
+                fantoStartNative(media)
+                return
+              }
+              if (ensurePlayer(media.url, media) == null) {''')
+
+          once('Stop native playback when photo or new media opens',
+           '  private fun stopVideo() {\n    currentVideoUrl = null',
+           '  private fun stopVideo() {\n    fantoReleaseNative()\n    currentVideoUrl = null')
+
+          once('Stop native when immersive viewer closes',
+           '    reportClosed()\n    player?.stop()',
+           '    reportClosed()\n    fantoReleaseNative()\n    player?.stop()')
+
+          once('Release native on Spatial shutdown',
+           '    // The player first, then the lens compositor, before the panel goes\n    releasePlayer()',
+           '    // The player first, then the lens compositor, before the panel goes\n    fantoReleaseNative()\n    releasePlayer()')
+
+          # HMD removal and mounting remain the source of truth: restart from 00:00 on the next wearer.
+          once('Remember current position of native playback',
+           '    val playerPositionMs = player?.takeIf { currentVideoUrl != null }?.currentPosition',
+           '''    val playerPositionMs =
+                if (fantoNativeReady && currentVideoUrl != null) {
+                  try { fantoNative?.currentPosition?.toLong() } catch (_: Exception) { null }
+                } else player?.takeIf { currentVideoUrl != null }?.currentPosition''')
+
+          once('Remember last position for close',
+           '  private fun rememberPosition() {\n    val p = player ?: return',
+           '''  private fun rememberPosition() {
+              if (fantoNativeReady && request?.isVideo == true && currentVideoUrl != null) {
+                lastKnownPositionMs = try { fantoNative?.currentPosition?.toLong() } catch (_: Exception) { null }
+                return
+              }
+              val p = player ?: return''')
+
+          once('Pause native on removal/focus loss',
+           '  private fun holdPlayback() {\n    val p = player ?: return',
+           '''  private fun holdPlayback() {
+              fantoNative?.let { native ->
+                if (fantoNativeReady) {
+                  try {
+                    if (native.isPlaying) playOnReturn = true
+                    native.pause()
+                  } catch (e: Exception) { Log.w(TAG, "FANTO native pause", e) }
+                } else playOnReturn = true
+                return
+              }
+              val p = player ?: return''')
+
+          once('Resume native on focus return',
+           '  private fun resumeHeldPlayback() {\n    if (!playbackAllowed()) return',
+           '''  private fun resumeHeldPlayback() {
+              if (!playbackAllowed()) return
+              fantoNative?.let { native ->
+                if (fantoNativeReady && playOnReturn && !fantoOutroVisible) {
+                  playOnReturn = false
+                  try { native.start() } catch (e: Exception) { Log.e(TAG, "FANTO native resume failed", e) }
+                }
+                return
+              }''')
+
+          # The exact anchor below comes from the FANTO v2 HMD patch, rather than upstream.
+          once('Restart native from zero on next visitor',
+           '''    if (request?.isVideo == true && currentVideoUrl != null) {
+                player?.seekTo(0L)
+                playOnReturn = true
+              }
+              resumeHeldPlayback()''',
+           '''    if (request?.isVideo == true && currentVideoUrl != null) {
+                if (fantoNativeReady) {
+                  try { fantoNative?.seekTo(0) } catch (e: Exception) { Log.e(TAG, "FANTO native rewind failed", e) }
+                } else player?.seekTo(0L)
+                playOnReturn = true
+              }
+              resumeHeldPlayback()''')
+
+          # The duration update in the hidden FANTO time bar is not essential to kiosk playback.
+          # Keep the time-bar logic untouched for ExoPlayer and all other platform/media paths.
+
+          p.write_text(s, encoding='utf-8')
+          print('SUCCESS: FANTO v6 native local-video test patch applied.')
+          FANTO_NATIVE_PY
+          python3 - <<'FANTO_NATIVE_NAME'
+          from pathlib import Path
+          gradle = Path('mobile/android/app/build.gradle')
+          s = gradle.read_text(encoding='utf8')
+          old='resValue "string", "app_name", "Immuch360 FANTO Pokazy v5"'
+          assert s.count(old)==1, 'Brak oryginalnej nazwy FANTO v5'
+          s=s.replace(old, 'resValue "string", "app_name", "Immuch360 FANTO v6 TEST"',1)
+          gradle.write_text(s, encoding='utf8')
+          FANTO_NATIVE_NAME
+
+      - name: FANTO v7 TEST - odczyt z pliku i widoczne bledy
+        run: |
+          python3 - <<'FANTO_V7_PY'
+          from pathlib import Path
+
+          source = Path('mobile/android/app/src/main/kotlin/app/alextran/immich/immersive/ImmersiveViewerActivity.kt')
+          s = source.read_text(encoding='utf-8')
+
+          def once(label, before, after):
+              global s
+              count = s.count(before)
+              print(f'FANTO v7 {label}: {count} matches')
+              if count != 1:
+                  raise SystemExit(f'Nieoczekiwany kod: {label}. Przerwano bez zapisywania zmian.')
+              s = s.replace(before, after, 1)
+
+          once('Diagnostic error state',
+               '  private var fantoNativeUrl: String? = null',
+               '''  private var fantoNativeUrl: String? = null
+            /** FANTO v7: allow error UI to be shown while normal playback controls remain hidden. */
+            private var fantoDiagnosticError = false''')
+
+          once('Error control-panel visibility',
+               '    if (visible && request?.isVideo == true) return',
+               '    if (visible && request?.isVideo == true && !fantoDiagnosticError) return')
+
+          once('Visible diagnostic helper',
+               '  private fun fantoStartNative(media: MediaRequest) {',
+               '''    private fun fantoShowDiagnosticError(message: String) {
+                  fantoDiagnosticError = true
+                  Log.e(TAG, "FANTO v7: $message")
+                  showError(message)
+                  setInfoVisible(true, reposition = true)
+                }
+
+            private fun fantoStartNative(media: MediaRequest) {''')
+
+          once('Reset diagnostic error for a new video',
+               '  private fun showVideo(media: MediaRequest) {\n    fantoReleaseNative()',
+               '  private fun showVideo(media: MediaRequest) {\n    fantoDiagnosticError = false\n    fantoReleaseNative()')
+
+          once('Report native error',
+               'showError("FANTO native MediaPlayer error $what/$extra")',
+               'fantoShowDiagnosticError("MediaPlayer error $what/$extra")')
+
+          once('Report data-source exception',
+               'showError("FANTO native player: ${e.javaClass.simpleName}")',
+               'fantoShowDiagnosticError("Nie otwarto filmu: ${e.javaClass.simpleName}: ${e.message}")')
+
+          # Setting a descriptor as a data source does not depend on MediaStore.Video.Media.DURATION.
+          # The direct metadata read is informational; failures do not prevent playback.
+          once('Use a descriptor rather than implicit URI resolution',
+               '      native.setDataSource(this, Uri.parse(url))',
+               '''                val sourceUri = Uri.parse(url)
+                          Log.i(TAG, "FANTO v7 source scheme=${sourceUri.scheme}, uri=$sourceUri")
+                          val descriptor = when (sourceUri.scheme?.lowercase()) {
+                            "content" -> contentResolver.openFileDescriptor(sourceUri, "r")
+                            "file" -> android.os.ParcelFileDescriptor.open(
+                              java.io.File(sourceUri.path ?: throw IllegalArgumentException("Brak sciezki file URI")),
+                              android.os.ParcelFileDescriptor.MODE_READ_ONLY
+                            )
+                            else -> throw IllegalArgumentException("Nieobslugiwany URI: ${sourceUri.scheme}")
+                          } ?: throw java.io.FileNotFoundException("Brak dostepu do pliku: $url")
+                          descriptor.use { fd ->
+                            Log.i(TAG, "FANTO v7 opened descriptor, size=${fd.statSize} bytes")
+                            try {
+                              val retriever = android.media.MediaMetadataRetriever()
+                              try {
+                                retriever.setDataSource(fd.fileDescriptor)
+                                val durationFromFile = retriever.extractMetadata(
+                                  android.media.MediaMetadataRetriever.METADATA_KEY_DURATION
+                                )
+                                Log.i(TAG, "FANTO v7 direct metadata duration=$durationFromFile ms")
+                              } finally { retriever.release() }
+                            } catch (e: Exception) {
+                              Log.w(TAG, "FANTO v7 metadata unavailable; playback still attempted", e)
+                            }
+                            native.setDataSource(fd.fileDescriptor)
+                          }''')
+
+          once('Mark v7 logs',
+               'Log.i(TAG, "FANTO v6: native Android MediaPlayer for local 360 video")',
+               'Log.i(TAG, "FANTO v7: native MP4 descriptor, MediaStore duration not required")')
+
+          source.write_text(s, encoding='utf-8')
+          print('FANTO v7: diagnostic patch applied.')
+
+          gradle = Path('mobile/android/app/build.gradle')
+          g = gradle.read_text(encoding='utf-8')
+          old = 'resValue "string", "app_name", "Immuch360 FANTO v6 TEST"'
+          assert g.count(old) == 1, 'Nie znaleziono nazwy Immuch360 v6'
+          gradle.write_text(g.replace(old, 'resValue "string", "app_name", "Immuch360 FANTO v7 TEST"', 1), encoding='utf-8')
+          FANTO_V7_PY
+
+      - name: FANTO v8 TEST - automatyczne wejscie bezposrednio do VR 360
+        run: |
+          python3 - <<'FANTO_V8_DIRECT_360'
+          from pathlib import Path
+          viewer = Path('mobile/lib/presentation/widgets/asset_viewer/asset_viewer.page.dart')
+          immersive = Path('mobile/lib/presentation/widgets/asset_viewer/immersive_viewer.dart')
+          if not viewer.is_file() or not immersive.is_file():
+              raise SystemExit('FANTO v8: brak plikow asset viewer / immersive viewer')
+          s = viewer.read_text(encoding='utf-8')
+          t = immersive.read_text(encoding='utf-8')
+          
+          def change(source, what, before, after):
+              found = source.count(before)
+              print(f'FANTO v8 {what}: {found} wystapien')
+              if found != 1:
+                  raise SystemExit(f'FANTO v8: zmieniony kod zrodlowy: {what}, oczekiwano 1, znaleziono {found}')
+              return source.replace(before, after, 1)
+          
+          s = change(s, 'import open360View',
+              "import 'package:immich_mobile/presentation/widgets/asset_viewer/viewer_top_app_bar.widget.dart';",
+              "import 'package:immich_mobile/presentation/widgets/asset_viewer/viewer_top_app_bar.widget.dart';\nimport 'package:immich_mobile/presentation/widgets/asset_viewer/view_360.dart';")
+          s = change(s, 'import Horizon provider',
+              "import 'package:immich_mobile/providers/asset_viewer/video_player_provider.dart';",
+              "import 'package:immich_mobile/providers/asset_viewer/video_player_provider.dart';\nimport 'package:immich_mobile/providers/infrastructure/immersive.provider.dart';")
+          
+          s = change(s, 'initial direct immersive opening',
+              '  void _onAssetInit(Duration timeStamp) {\n    _preloader.preload(\n      widget.initialIndex,\n      context.sizeData,\n      thumbnailSize: ref.read(assetViewerProvider).thumbnailSize,\n    );\n    _handleCasting();\n  }',
+              '''  void _onAssetInit(Duration timeStamp) {
+              _preloader.preload(
+                widget.initialIndex,
+                context.sizeData,
+                thumbnailSize: ref.read(assetViewerProvider).thumbnailSize,
+              );
+              _handleCasting();
+              // FANTO v8: bypass the Flutter 2D video player on Meta Quest.
+              unawaited(_fantoAutoOpen360());
+            }
+          
+            bool _fantoOpening360 = false;
+          
+            Future<void> _fantoAutoOpen360() async {
+              if (!mounted || _fantoOpening360) return;
+              _fantoOpening360 = true;
+              try {
+                // The Quest check is asynchronous. Opening before it resolves would fall back to 2D.
+                final onQuest = await ref.read(isHorizonOsProvider.future);
+                if (!mounted || !onQuest) return;
+                final asset = ref.read(assetViewerProvider).currentAsset;
+                if (asset == null || !asset.isVideo) return;
+                // Do not launch another immersive activity on top of an active one.
+                if (ref.read(immersiveSessionProvider).isOpen) return;
+                // Same route as the standard 360 button, but called automatically on first open.
+                await open360View(context, ref, asset);
+              } catch (error) {
+                debugPrint('FANTO v8 auto 360 open failed: $error');
+              } finally {
+                _fantoOpening360 = false;
+              }
+            }''')
+          
+          # The kiosk content is all equirectangular 360° video; do not depend on 360 detection tags.
+          t = change(t, 'force 360 projection for video',
+              'view: view(gpanoCrop: gpanoCrop, probe: probe),',
+              'view: asset.isVideo ? raw360SphereView : view(gpanoCrop: gpanoCrop, probe: probe),')
+          
+          viewer.write_text(s, encoding='utf-8')
+          immersive.write_text(t, encoding='utf-8')
+          print('FANTO v8: wejscie bezposrednio 360 gotowe')
+          FANTO_V8_DIRECT_360
+
+      - name: FANTO v9 TEST - odzyskiwanie odtwarzacza po bledach i ponowne zalozenie gogli
+        run: |
+          python3 - <<'FANTO_V9_PY'
+          from pathlib import Path
+          
+          source = Path('mobile/android/app/src/main/kotlin/app/alextran/immich/immersive/ImmersiveViewerActivity.kt')
+          s = source.read_text(encoding='utf-8')
+          
+          def replace_one(label: str, old: str, new: str) -> None:
+              global s
+              n = s.count(old)
+              print(f'FANTO v9 | {label}: {n} match(es)')
+              if n != 1:
+                  raise SystemExit(f'FANTO v9 STOP: {label}; expected 1 exact match, got {n}. Nothing saved.')
+              s = s.replace(old, new, 1)
+          
+          # MediaPlayer normally reports callbacks on the main thread. The position sampler
+          # also uses the Activity's preexisting Main CoroutineScope and stops on release.
+          replace_one('track playback health',
+              '  private var fantoNativeUrl: String? = null\n  /** FANTO v7: allow error UI',
+              '''  private var fantoNativeUrl: String? = null
+            /** FANTO v9: last healthy position, used ONLY for end-of-film recovery. */
+            private var fantoNativeLastPositionMs = 0L
+            private var fantoNativeLengthMs = 0L
+            private var fantoNativeMonitorJob: Job? = null
+            /** FANTO v7: allow error UI''')
+          
+          replace_one('cancel monitor on release',
+              '''  private fun fantoReleaseNative() {
+              val old = fantoNative''',
+              '''  private fun fantoReleaseNative() {
+              fantoNativeMonitorJob?.cancel()
+              fantoNativeMonitorJob = null
+              val old = fantoNative''')
+          
+          replace_one('allow restart at zero without modifying request',
+              '  private fun fantoStartNative(media: MediaRequest) {\n    fantoReleaseNative()',
+              '''  private fun fantoStartNative(media: MediaRequest, fromBeginning: Boolean = false) {
+              fantoReleaseNative()
+              fantoNativeLastPositionMs = 0L
+              fantoNativeLengthMs = 0L''')
+          
+          replace_one('prepared playback with a health monitor',
+              '''        fantoNativeReady = true
+                  if (media.startPositionMs > 0L) {
+                    ready.seekTo(media.startPositionMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                  }
+                  Log.i(TAG, "FANTO v6 native prepared: duration=${ready.duration} ms")
+                  if (playbackAllowed()) ready.start() else playOnReturn = true
+                  updateProgress()''',
+              '''      fantoNativeReady = true
+                val preparedLength = try { ready.duration.toLong().coerceAtLeast(0L) } catch (_: Exception) { 0L }
+                if (preparedLength > 0L) fantoNativeLengthMs = preparedLength
+                if (!fromBeginning && media.startPositionMs > 0L) {
+                  ready.seekTo(media.startPositionMs.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                }
+                Log.i(TAG, "FANTO v9 prepared: duration=$fantoNativeLengthMs ms; reset=$fromBeginning")
+                fantoNativeMonitorJob?.cancel()
+                fantoNativeMonitorJob = scope.launch {
+                  while (ready === fantoNative && fantoNativeReady) {
+                    try {
+                      fantoNativeLastPositionMs = ready.currentPosition.toLong().coerceAtLeast(0L)
+                    } catch (_: Exception) {
+                      // A codec crash may invalidate getCurrentPosition(); retain the last GOOD value.
+                    }
+                    delay(500L)
+                  }
+                }
+                if (playbackAllowed()) {
+                  try { ready.start() }
+                  catch (e: Exception) {
+                    Log.e(TAG, "FANTO v9 start failed", e)
+                    fantoReleaseNative()
+                    fantoShowDiagnosticError("Start: ${e.javaClass.simpleName}")
+                  }
+                } else playOnReturn = true
+                updateProgress()''')
+          
+          replace_one('use direct file metadata as fallback for missing player duration',
+              'Log.i(TAG, "FANTO v7 direct metadata duration=$durationFromFile ms")',
+              '''Log.i(TAG, "FANTO v7 direct metadata duration=$durationFromFile ms")
+                                durationFromFile?.toLongOrNull()?.takeIf { it > 0L }?.let {
+                                  fantoNativeLengthMs = it
+                                }''')
+          
+          replace_one('release decoder on normal completion',
+              '''      native.setOnCompletionListener { completed ->
+                  if (completed === fantoNative) showFantoOutro()
+                }''',
+              '''    native.setOnCompletionListener { completed ->
+                if (completed === fantoNative) {
+                  Log.i(TAG, "FANTO v9: normal video completion")
+                  fantoReleaseNative()
+                  showFantoOutro()
+                }
+              }''')
+          
+          replace_one('recover MediaPlayer error state',
+              '''      native.setOnErrorListener { failed, what, extra ->
+                  if (failed === fantoNative) {
+                    Log.e(TAG, "FANTO v6 native playback error $what/$extra")
+                    fantoShowDiagnosticError("MediaPlayer error $what/$extra")
+                  }
+                  true
+                }''',
+              '''    native.setOnErrorListener { failed, what, extra ->
+                if (failed === fantoNative) {
+                  val last = fantoNativeLastPositionMs
+                  val length = fantoNativeLengthMs
+                  // On Android, what=100 means the media service died: this player is unusable.
+                  // A -38 status is also unsafe to seek/start. Never reuse either instance.
+                  Log.e(TAG, "FANTO v9 decoder failure what=$what extra=$extra last=$last length=$length")
+                  val practicallyFinished =
+                    length >= 30000L && last >= (length - 15000L).coerceAtLeast(0L)
+                  fantoReleaseNative()
+                  playOnReturn = false
+                  if (practicallyFinished) {
+                    Log.w(TAG, "FANTO v9: failure in final 15s; showing FANTO outro")
+                    showFantoOutro()
+                  } else {
+                    fantoShowDiagnosticError("MediaPlayer $what/$extra, $last/$length ms; ponow zaloz gogle")
+                  }
+                }
+                true
+              }''')
+          
+          # Release on removal. Recreate rather than seek on re-mount. This also resets
+          # errored native players which have already been released by OnErrorListener.
+          replace_one('release native decoder when headset is removed',
+              '''    headsetUnworn = true
+              holdPlayback()
+            }
+          
+            /** FANTO: restart from zero whenever the next visitor puts the headset on. */''',
+              '''    headsetUnworn = true
+              holdPlayback()
+              if (fantoNative != null) {
+                Log.i(TAG, "FANTO v9: headset off, releasing native decoder")
+                fantoReleaseNative()
+              }
+            }
+          
+            /** FANTO: restart from zero whenever the next visitor puts the headset on. */''')
+          
+          replace_one('create a fresh player when headset is worn',
+              '''    if (request?.isVideo == true && currentVideoUrl != null) {
+                if (fantoNativeReady) {
+                  try { fantoNative?.seekTo(0) } catch (e: Exception) { Log.e(TAG, "FANTO native rewind failed", e) }
+                } else player?.seekTo(0L)
+                playOnReturn = true
+              }
+              resumeHeldPlayback()''',
+              '''    val media = request
+              if (media != null && media.isVideo && currentVideoUrl != null && fantoUseNative(media)) {
+                // Full restart also recovers from MEDIA_ERROR_SERVER_DIED and -38.
+                Log.i(TAG, "FANTO v9: headset on, fresh native player from 00:00")
+                fantoDiagnosticError = false
+                hideFeedback()
+                setInfoVisible(false, reposition = false)
+                videoRevealed = false
+                videoEntity?.setComponent(Visible(false))
+                setStatus(getString(R.string.immersive_loading))
+                fantoStartNative(media, fromBeginning = true)
+                return // onPrepared/onSessionStateChanged will start playback when VR focus is ready
+              }
+              if (media?.isVideo == true && currentVideoUrl != null) {
+                player?.seekTo(0L)
+                playOnReturn = true
+              }
+              resumeHeldPlayback()''')
+          
+          assert s.count('FANTO v9: headset on, fresh native player') == 1
+          assert s.count('fantoNativeMonitorJob?.cancel()') == 2
+          source.write_text(s, encoding='utf-8')
+          print('FANTO v9: all native-player recovery changes applied.')
+          
+          # Separate release-only test app name; keep v8 APK available for rollback.
+          gradle = Path('mobile/android/app/build.gradle')
+          g = gradle.read_text(encoding='utf-8')
+          old = 'resValue "string", "app_name", "Immuch360 FANTO v7 TEST"'
+          if g.count(old) != 1:
+              raise SystemExit(f'FANTO v9 STOP: unexpected Gradle app-name anchor ({g.count(old)})')
+          gradle.write_text(g.replace(old, 'resValue "string", "app_name", "Immuch360 FANTO v9 TEST"', 1), encoding='utf-8')
+          FANTO_V9_PY
+
+      - name: Zbuduj APK na Quest Pro (oddzielna aplikacja)
+        working-directory: mobile
+        env:
+          PR_NUMBER: '366'
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+        run: |
+          mise exec -- flutter build apk --release --flavor quest --target-platform android-arm64 --android-project-arg arm64only=true
+          ls -lh build/app/outputs/flutter-apk/app-quest-release.apk
+
+      - name: Udostępnij gotowe APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Immuch360-FANTO-v9-TEST-APK
+          path: mobile/build/app/outputs/flutter-apk/app-quest-release.apk
+          retention-days: 30
