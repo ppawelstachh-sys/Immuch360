@@ -656,17 +656,17 @@ jobs:
               s = s.replace(before, after, 1)
 
           once('Diagnostic error state',
-               '    private var fantoNativeUrl: String? = null',
-               '''    private var fantoNativeUrl: String? = null
-                /** FANTO v7: allow error UI to be shown while normal playback controls remain hidden. */
-                private var fantoDiagnosticError = false''')
+               '  private var fantoNativeUrl: String? = null',
+               '''  private var fantoNativeUrl: String? = null
+            /** FANTO v7: allow error UI to be shown while normal playback controls remain hidden. */
+            private var fantoDiagnosticError = false''')
 
           once('Error control-panel visibility',
                '    if (visible && request?.isVideo == true) return',
                '    if (visible && request?.isVideo == true && !fantoDiagnosticError) return')
 
           once('Visible diagnostic helper',
-               '    private fun fantoStartNative(media: MediaRequest) {',
+               '  private fun fantoStartNative(media: MediaRequest) {',
                '''    private fun fantoShowDiagnosticError(message: String) {
                   fantoDiagnosticError = true
                   Log.e(TAG, "FANTO v7: $message")
@@ -674,7 +674,7 @@ jobs:
                   setInfoVisible(true, reposition = true)
                 }
 
-                private fun fantoStartNative(media: MediaRequest) {''')
+            private fun fantoStartNative(media: MediaRequest) {''')
 
           once('Reset diagnostic error for a new video',
                '  private fun showVideo(media: MediaRequest) {\n    fantoReleaseNative()',
@@ -691,7 +691,7 @@ jobs:
           # Setting a descriptor as a data source does not depend on MediaStore.Video.Media.DURATION.
           # The direct metadata read is informational; failures do not prevent playback.
           once('Use a descriptor rather than implicit URI resolution',
-               '                native.setDataSource(this, Uri.parse(url))',
+               '      native.setDataSource(this, Uri.parse(url))',
                '''                val sourceUri = Uri.parse(url)
                           Log.i(TAG, "FANTO v7 source scheme=${sourceUri.scheme}, uri=$sourceUri")
                           val descriptor = when (sourceUri.scheme?.lowercase()) {
