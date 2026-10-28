@@ -1,0 +1,93 @@
+name: FANTO v8 - znajdz kod przycisku 360
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kod-360:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pobierz wersje Immuch360 uzywana w FANTO
+        uses: actions/checkout@v4
+        with:
+          repository: freeKC/Immuch360
+          ref: v3.3.0-rc.0-25
+          persist-credentials: false
+
+      - name: Zbierz kod przejscia z okna do VR 360
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          import re
+
+          root = Path('mobile')
+          if not root.exists():
+              raise SystemExit('Brak folderu mobile w kodzie Immuch360')
+
+          tokens = re.compile(r'(?i)(immersive.?view|launch.?immersive|open.?immersive|immersive.?media|quest.?view|methodchannel|360°|\b360\b)')
+          entries = []
+          candidate_files = []
+
+          for path in sorted((root / 'lib').rglob('*.dart')):
+              if not path.is_file() or path.stat().st_size > 500_000:
+                  continue
+              lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+              hit_lines = [i for i, line in enumerate(lines) if tokens.search(line)]
+              if not hit_lines:
+                  continue
+              score = sum(3 if re.search(r'(?i)(immersive.?view|launch.?immersive|open.?immersive)', lines[i]) else 1 for i in hit_lines)
+              candidate_files.append((score, path, lines, hit_lines))
+
+          candidate_files.sort(key=lambda entry: -entry[0])
+          entries.append('FANTO v8 - fragmenty z wersji v3.3.0-rc.0-25')
+          entries.append('Lista plikow Dart z tekstem o przejsciu do immersyjnego trybu 360.\n')
+
+          selected = []
+          for score, path, lines, hits in candidate_files[:24]:
+              selected.append(path)
+              entries.append(f'\n========== {path} [score={score}] ==========')
+              ranges = []
+              for i in hits[:35]:
+                  start, end = max(0, i-9), min(len(lines), i+10)
+                  if ranges and start <= ranges[-1][1]:
+                      ranges[-1] = (ranges[-1][0], max(end,ranges[-1][1]))
+                  else:
+                      ranges.append((start,end))
+              for start, end in ranges:
+                  entries.append(f'--- linie {start+1}-{end} ---')
+                  entries.extend(f'{j+1:04d}: {lines[j]}' for j in range(start,end))
+
+          native_files = [
+              Path('mobile/android/app/src/main/kotlin/app/alextran/immich/immersive/ImmersiveViewerActivity.kt'),
+          ]
+          for path in native_files:
+              if path.exists():
+                  selected.append(path)
+                  lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
+                  entries.append(f'\n========== {path} ==========')
+                  for i, line in enumerate(lines):
+                      if re.search(r'(onCreate|showRequest|MediaRequest|\brequest\b|onNewIntent|startActivity|Intent)', line):
+                          entries.extend(f'{j+1:04d}: {lines[j]}' for j in range(max(0,i-3), min(len(lines),i+5)))
+
+          report = Path('FANTO_V8_FRAGMENTY_360.txt')
+          report.write_text('\n'.join(entries) + '\n', encoding='utf-8')
+          with ZipFile('FANTO_V8_ZRODLA_360.zip', 'w', ZIP_DEFLATED) as archive:
+              archive.write(report, report.name)
+              for path in dict.fromkeys(selected):
+                  archive.write(path, str(path))
+          print(f'Zebrano {len(selected)} plikow, {report.stat().st_size} bajtow raportu')
+          print('Otworz artefakt FANTO-V8-KOD-360 po zakonczeniu zadania.')
+          PY
+
+      - name: Udostepnij kod do analizy
+        uses: actions/upload-artifact@v4
+        with:
+          name: FANTO-V8-KOD-360
+          path: FANTO_V8_ZRODLA_360.zip
+          if-no-files-found: error
+          retention-days: 7
